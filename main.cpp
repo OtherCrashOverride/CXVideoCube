@@ -731,6 +731,7 @@ int main()
 		}
 	}
 
+	close(amlfd);
 
 	return 0;
 }
