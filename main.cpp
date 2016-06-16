@@ -14,7 +14,8 @@
 // The headers are not aware C++ exists
 extern "C"
 {
-#include <amcodec/codec.h>
+//#include <amcodec/codec.h>
+#include <codec.h>
 }
 
 #include "egl.h"
@@ -30,6 +31,7 @@ extern "C"
 #include "Matrix4.h"
 #include "Exception.h"
 
+#include <drm/drm_fourcc.h>
 
 // Codec parameter flags
 //    size_t is used to make it 
@@ -42,7 +44,7 @@ const size_t MAX_REFER_BUF = 0x10;
 const size_t ERROR_RECOVERY_MODE_IN = 0x20;
 
 // Buffer size
-const int BUFFER_SIZE = 4096;	// 4K (page)
+const int BUFFER_SIZE = 1024;	// 4K (page)
 
 // Copied from https://github.com/hardkernel/linux/blob/odroidc-3.10.y/include/linux/amlogic/amports/amvideocap.h
 #define AMVIDEOCAP_IOC_MAGIC 'V'
@@ -73,6 +75,8 @@ const int BUFFER_SIZE = 4096;	// 4K (page)
 #define AMVIDEOCAP_IOR_SET_SRC_Y                _IOR(AMVIDEOCAP_IOC_MAGIC, 0x41, int)
 #define AMVIDEOCAP_IOR_SET_SRC_WIDTH            _IOR(AMVIDEOCAP_IOC_MAGIC, 0x42, int)
 #define AMVIDEOCAP_IOR_SET_SRC_HEIGHT           _IOR(AMVIDEOCAP_IOC_MAGIC, 0x43, int)
+
+#define AMVIDEOCAP_GET_DMABUF_FD   _IOWR(AMVIDEOCAP_IOC_MAGIC, 0x50, int)
 
 
 // ge2d.h
@@ -131,8 +135,28 @@ const int BUFFER_SIZE = 4096;	// 4K (page)
 #define GE2D_FORMAT_S32_RGBA (GE2D_FMT_S32_RGBA | GE2D_COLOR_MAP_RGBA8888) 
 
 
+// EGL_EXT_image_dma_buf_import
+#define EGL_LINUX_DMA_BUF_EXT          0x3270
+
+#define EGL_LINUX_DRM_FOURCC_EXT        0x3271
+#define EGL_DMA_BUF_PLANE0_FD_EXT       0x3272
+#define EGL_DMA_BUF_PLANE0_OFFSET_EXT   0x3273
+#define EGL_DMA_BUF_PLANE0_PITCH_EXT    0x3274
+#define EGL_DMA_BUF_PLANE1_FD_EXT       0x3275
+#define EGL_DMA_BUF_PLANE1_OFFSET_EXT   0x3276
+#define EGL_DMA_BUF_PLANE1_PITCH_EXT    0x3277
+#define EGL_DMA_BUF_PLANE2_FD_EXT       0x3278
+#define EGL_DMA_BUF_PLANE2_OFFSET_EXT   0x3279
+#define EGL_DMA_BUF_PLANE2_PITCH_EXT    0x327A
+#define EGL_YUV_COLOR_SPACE_HINT_EXT    0x327B
+#define EGL_SAMPLE_RANGE_HINT_EXT       0x327C
+#define EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT  0x327D
+#define EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT    0x327E
+
+
 // Global variable(s)
 bool isRunning;
+int dmabuf_fd = -1;
 
 
 
@@ -212,6 +236,11 @@ void* VideoDecoderThread(void* argument)
 			printf("codec_write error: %x\n", api);
 			codec_reset(&codecContext);
 		}
+
+		// This is required on C2. The codec_write function
+		// currently does not appear to block as it should. This
+		// causes the buffers to overflow and the codec errors.
+		usleep(500);
 	}
 
 
@@ -450,6 +479,18 @@ int OpenCapture()
 		exit(1);
 	}
 
+	if (ioctl(amlfd, AMVIDEOCAP_GET_DMABUF_FD, &dmabuf_fd) == -1)
+	{
+		printf("ioctl AMVIDEOCAP_GET_DMABUF_FD failed.\n");
+		exit(1);
+	}
+	else
+	{
+		printf("dma-buf file descriptor=%d\n", dmabuf_fd);
+	}
+	
+
+
 	return amlfd;
 }
 
@@ -474,6 +515,9 @@ int main()
 	EGLContext context = Egl_CreateContext(display, surface, config);
 
 
+	printf("GL Extensions: %s\n", glGetString(GL_EXTENSIONS));
+	
+
 	// start decoder
 	pthread_t thread;
 	int result_code = pthread_create(&thread, NULL, VideoDecoderThread, NULL);
@@ -487,14 +531,33 @@ int main()
 	// Setup capture
 	int amlfd = OpenCapture();
 	
-	void* captureData = mmap(NULL, 1920 * 1080 * 4, PROT_READ, MAP_FILE | MAP_SHARED, amlfd, 0);
-	if (captureData == MAP_FAILED)
-	{
-		printf("mmap failed\n");
-		exit(1);
-	}
+	//void* captureData = mmap(NULL, 1920 * 1080 * 4, PROT_READ, MAP_FILE | MAP_SHARED, amlfd, 0);
+	//void* captureData = mmap(NULL, 1920 * 1080 * 4, PROT_READ, MAP_FILE | MAP_SHARED, dmabuf_fd, 0);
+	//if (captureData == MAP_FAILED)
+	//{
+	//	printf("mmap failed\n");
+	//	exit(1);
+	//}
 
-	printf("captureData=%p\n", captureData);
+	//printf("captureData=%p\n", captureData);
+
+
+	// EGL_EXT_image_dma_buf_import
+	EGLint img_attrs[] = {
+		EGL_WIDTH, 1920,
+		EGL_HEIGHT, 1080,
+		EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_RGBA8888,
+		EGL_DMA_BUF_PLANE0_FD_EXT,	dmabuf_fd,
+		EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+		EGL_DMA_BUF_PLANE0_PITCH_EXT, 1920 * 4,
+		EGL_NONE
+	};
+
+	EGLImageKHR image = eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, 0, img_attrs);
+	Egl_CheckError();
+
+	printf("EGLImageKHR = %p\n", image);
+
 
 
 	// Texture
@@ -514,7 +577,10 @@ int main()
 	glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	GL_CheckError();
 
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1920, 1080, 0, GL_RGBA, GL_UNSIGNED_BYTE, (const GLvoid *)NULL);
+	//glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1920, 1080, 0, GL_RGBA, GL_UNSIGNED_BYTE, (const GLvoid *)NULL);
+	//GL_CheckError();
+
+	glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, image);
 	GL_CheckError();
 
 
@@ -645,14 +711,14 @@ int main()
 
 
 			// Upload texture data
-			glActiveTexture(GL_TEXTURE0);
-			GL_CheckError();
+			//glActiveTexture(GL_TEXTURE0);
+			//GL_CheckError();
 
-			glBindTexture(GL_TEXTURE_2D, texture2D);
-			GL_CheckError();
+			//glBindTexture(GL_TEXTURE_2D, texture2D);
+			//GL_CheckError();
 
-			glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1920, 1080, GL_RGBA, GL_UNSIGNED_BYTE, captureData);
-			GL_CheckError();
+			//glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1920, 1080, GL_RGBA, GL_UNSIGNED_BYTE, captureData);
+			//GL_CheckError();
 
 
 			// Quad
