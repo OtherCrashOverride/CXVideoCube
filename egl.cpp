@@ -8,6 +8,15 @@
 
 fbdev_window window;
 
+void _Egl_CheckError(const char* file, int line)
+{
+	EGLint error = eglGetError();
+	if (error != EGL_SUCCESS)
+	{
+		printf("eglGetError(): %i (0x%.4x) - Failed at %s:%i\n", (int)error, (int)error, file, line);
+		exit(1);
+	}
+}
 
 EGLDisplay Egl_Initialize()
 {

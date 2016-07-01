@@ -10,6 +10,11 @@
 #include <sys/mman.h>	//mmap
 #include <sys/ioctl.h>
 #include <pthread.h>
+#include <sys/time.h>
+#include <linux/fb.h>
+#include <cstdlib>	//rand
+#include <errno.h>
+#include <linux/videodev2.h> // V4L
 
 // The headers are not aware C++ exists
 extern "C"
@@ -33,6 +38,11 @@ extern "C"
 
 #include <drm/drm_fourcc.h>
 
+
+// Ion video header from drivers\staging\android\uapi\ion.h
+#include "ion.h"
+
+
 // Codec parameter flags
 //    size_t is used to make it 
 //    64bit safe for use on Odroid C2
@@ -44,95 +54,7 @@ const size_t MAX_REFER_BUF = 0x10;
 const size_t ERROR_RECOVERY_MODE_IN = 0x20;
 
 // Buffer size
-const int BUFFER_SIZE = 1024;	// 4K (page)
-
-// Copied from https://github.com/hardkernel/linux/blob/odroidc-3.10.y/include/linux/amlogic/amports/amvideocap.h
-#define AMVIDEOCAP_IOC_MAGIC 'V'
-#define AMVIDEOCAP_IOW_SET_WANTFRAME_FORMAT     		_IOW(AMVIDEOCAP_IOC_MAGIC, 0x01, int)
-#define AMVIDEOCAP_IOW_SET_WANTFRAME_WIDTH      		_IOW(AMVIDEOCAP_IOC_MAGIC, 0x02, int)
-#define AMVIDEOCAP_IOW_SET_WANTFRAME_HEIGHT     		_IOW(AMVIDEOCAP_IOC_MAGIC, 0x03, int)
-#define AMVIDEOCAP_IOW_SET_WANTFRAME_TIMESTAMP_MS     	_IOW(AMVIDEOCAP_IOC_MAGIC, 0x04, u64)
-#define AMVIDEOCAP_IOW_SET_WANTFRAME_WAIT_MAX_MS     	_IOW(AMVIDEOCAP_IOC_MAGIC, 0x05, u64)
-#define AMVIDEOCAP_IOW_SET_WANTFRAME_AT_FLAGS     		_IOW(AMVIDEOCAP_IOC_MAGIC, 0x06, int)
-
-
-#define AMVIDEOCAP_IOR_GET_FRAME_FORMAT     		_IOR(AMVIDEOCAP_IOC_MAGIC, 0x10, int)
-#define AMVIDEOCAP_IOR_GET_FRAME_WIDTH      		_IOR(AMVIDEOCAP_IOC_MAGIC, 0x11, int)
-#define AMVIDEOCAP_IOR_GET_FRAME_HEIGHT     		_IOR(AMVIDEOCAP_IOC_MAGIC, 0x12, int)
-#define AMVIDEOCAP_IOR_GET_FRAME_TIMESTAMP_MS     	_IOR(AMVIDEOCAP_IOC_MAGIC, 0x13, int)
-
-
-#define AMVIDEOCAP_IOR_GET_SRCFRAME_FORMAT      			_IOR(AMVIDEOCAP_IOC_MAGIC, 0x20, int)
-#define AMVIDEOCAP_IOR_GET_SRCFRAME_WIDTH       			_IOR(AMVIDEOCAP_IOC_MAGIC, 0x21, int)
-#define AMVIDEOCAP_IOR_GET_SRCFRAME_HEIGHT      			_IOR(AMVIDEOCAP_IOC_MAGIC, 0x22, int)
-
-
-#define AMVIDEOCAP_IOR_GET_STATE     	   			_IOR(AMVIDEOCAP_IOC_MAGIC, 0x31, int)
-#define AMVIDEOCAP_IOW_SET_START_CAPTURE   			_IOW(AMVIDEOCAP_IOC_MAGIC, 0x32, int)
-#define AMVIDEOCAP_IOW_SET_CANCEL_CAPTURE  			_IOW(AMVIDEOCAP_IOC_MAGIC, 0x33, int)
-
-#define AMVIDEOCAP_IOR_SET_SRC_X                _IOR(AMVIDEOCAP_IOC_MAGIC, 0x40, int)
-#define AMVIDEOCAP_IOR_SET_SRC_Y                _IOR(AMVIDEOCAP_IOC_MAGIC, 0x41, int)
-#define AMVIDEOCAP_IOR_SET_SRC_WIDTH            _IOR(AMVIDEOCAP_IOC_MAGIC, 0x42, int)
-#define AMVIDEOCAP_IOR_SET_SRC_HEIGHT           _IOR(AMVIDEOCAP_IOC_MAGIC, 0x43, int)
-
-#define AMVIDEOCAP_GET_DMABUF_FD   _IOWR(AMVIDEOCAP_IOC_MAGIC, 0x50, int)
-
-
-// ge2d.h
-#define GE2D_ENDIAN_SHIFT       	24
-#define GE2D_ENDIAN_MASK            (0x1 << GE2D_ENDIAN_SHIFT)
-#define GE2D_BIG_ENDIAN             (0 << GE2D_ENDIAN_SHIFT)
-#define GE2D_LITTLE_ENDIAN          (1 << GE2D_ENDIAN_SHIFT)
-
-#define GE2D_FMT_S8_Y            	0x00000 /* 00_00_0_00_0_00 */
-#define GE2D_FMT_S8_CB           	0x00040 /* 00_01_0_00_0_00 */
-#define GE2D_FMT_S8_CR           	0x00080 /* 00_10_0_00_0_00 */
-#define GE2D_FMT_S8_R            	0x00000 /* 00_00_0_00_0_00 */
-#define GE2D_FMT_S8_G            	0x00040 /* 00_01_0_00_0_00 */
-#define GE2D_FMT_S8_B            	0x00080 /* 00_10_0_00_0_00 */
-#define GE2D_FMT_S8_A            	0x000c0 /* 00_11_0_00_0_00 */
-#define GE2D_FMT_S8_LUT          	0x00020 /* 00_00_1_00_0_00 */
-#define GE2D_FMT_S16_YUV422      	0x20102 /* 01_00_0_00_0_00 */
-#define GE2D_FMT_S16_RGB         	(GE2D_LITTLE_ENDIAN|0x00100) /* 01_00_0_00_0_00 */
-#define GE2D_FMT_S24_YUV444      	0x20200 /* 10_00_0_00_0_00 */
-#define GE2D_FMT_S24_RGB         	(GE2D_LITTLE_ENDIAN|0x00200) /* 10_00_0_00_0_00 */
-#define GE2D_FMT_S32_YUVA444     	0x20300 /* 11_00_0_00_0_00 */
-#define GE2D_FMT_S32_RGBA        	(GE2D_LITTLE_ENDIAN|0x00300) /* 11_00_0_00_0_00 */
-#define GE2D_FMT_M24_YUV420      	0x20007 /* 00_00_0_00_1_11 */
-#define GE2D_FMT_M24_YUV422      	0x20006 /* 00_00_0_00_1_10 */
-#define GE2D_FMT_M24_YUV444      	0x20004 /* 00_00_0_00_1_00 */
-#define GE2D_FMT_M24_RGB         	0x00004 /* 00_00_0_00_1_00 */
-#define GE2D_FMT_M24_YUV420T     	0x20017 /* 00_00_0_10_1_11 */
-#define GE2D_FMT_M24_YUV420B     	0x2001f /* 00_00_0_11_1_11 */
-
-#define GE2D_FMT_M24_YUV420SP		0x20207
-#define GE2D_FMT_M24_YUV420SPT		0x20217 /* 01_00_0_00_1_11 nv12 &nv21, only works on m6. */
-#define GE2D_FMT_M24_YUV420SPB		0x2021f /* 01_00_0_00_1_11 nv12 &nv21, only works on m6. */
-
-#define GE2D_FMT_S16_YUV422T     	0x20110 /* 01_00_0_10_0_00 */
-#define GE2D_FMT_S16_YUV422B     	0x20138 /* 01_00_0_11_0_00 */
-#define GE2D_FMT_S24_YUV444T     	0x20210 /* 10_00_0_10_0_00 */
-#define GE2D_FMT_S24_YUV444B     	0x20218 /* 10_00_0_11_0_00 */
-
-/*32 bit*/
-#define GE2D_COLOR_MAP_SHIFT 20
-
-#define GE2D_COLOR_MAP_RGBA8888		(0 << GE2D_COLOR_MAP_SHIFT)
-#define GE2D_COLOR_MAP_YUVA8888		(0 << GE2D_COLOR_MAP_SHIFT)
-#define GE2D_COLOR_MAP_ARGB8888     (1 << GE2D_COLOR_MAP_SHIFT)
-#define GE2D_COLOR_MAP_AYUV8888     (1 << GE2D_COLOR_MAP_SHIFT)
-#define GE2D_COLOR_MAP_ABGR8888     (2 << GE2D_COLOR_MAP_SHIFT)
-#define GE2D_COLOR_MAP_AVUY8888     (2 << GE2D_COLOR_MAP_SHIFT)
-#define GE2D_COLOR_MAP_BGRA8888     (3 << GE2D_COLOR_MAP_SHIFT)
-#define GE2D_COLOR_MAP_VUYA8888     (3 << GE2D_COLOR_MAP_SHIFT)
-
-#define GE2D_FORMAT_S32_ARGB        (GE2D_FMT_S32_RGBA    | GE2D_COLOR_MAP_ARGB8888) 
-#define GE2D_FORMAT_S32_ABGR        (GE2D_FMT_S32_RGBA    | GE2D_COLOR_MAP_ABGR8888) 
-#define GE2D_FORMAT_S32_BGRA        (GE2D_FMT_S32_RGBA    | GE2D_COLOR_MAP_BGRA8888) 
-
-//
-#define GE2D_FORMAT_S32_RGBA (GE2D_FMT_S32_RGBA | GE2D_COLOR_MAP_RGBA8888) 
+const int BUFFER_SIZE = 1024 * 32;	// 4K video expected
 
 
 // EGL_EXT_image_dma_buf_import
@@ -153,11 +75,51 @@ const int BUFFER_SIZE = 1024;	// 4K (page)
 #define EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT  0x327D
 #define EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT    0x327E
 
+#define EGL_ITU_REC601_EXT   0x327F
+#define EGL_ITU_REC709_EXT   0x3280
+#define EGL_ITU_REC2020_EXT  0x3281
+
+#define EGL_YUV_FULL_RANGE_EXT    0x3282
+#define EGL_YUV_NARROW_RANGE_EXT  0x3283
+
+#define EGL_YUV_CHROMA_SITING_0_EXT    0x3284
+#define EGL_YUV_CHROMA_SITING_0_5_EXT  0x3285
+
+
+// OSD dma_buf experimental support
+#define OSD_GET_DMA_BUF_FD		_IOWR('m', 313, int)
+#define FBIOPAN_DISPLAY         0x4606
+#define FBIO_WAITFORVSYNC       _IOW('F', 0x20, __u32)
+#define DIRECT_RENDERING		0
+
+const int MAX_SCREEN_BUFFERS = 2;
+const int SWAP_INTERVAL = 0;
+
+
 
 // Global variable(s)
 bool isRunning;
 int dmabuf_fd = -1;
+timeval startTime;
+timeval endTime;
 
+
+void ResetTime()
+{
+	gettimeofday(&startTime, NULL);
+	endTime = startTime;
+}
+
+float GetTime()
+{
+	gettimeofday(&endTime, NULL);
+	float seconds = (endTime.tv_sec - startTime.tv_sec);
+	float milliseconds = (float(endTime.tv_usec - startTime.tv_usec)) / 1000000.0f;
+
+	startTime = endTime;
+
+	return seconds + milliseconds;
+}
 
 
 
@@ -168,30 +130,72 @@ void SignalHandler(int s)
 }
 
 
-void GL_CheckError()
+#define GL_CheckError(x) ({_GL_CheckError(__FILE__, __LINE__);})
+//#define GL_CheckError(x) ({})
+
+void _GL_CheckError(const char* file, int line)
 {
 	int error = glGetError();
 
 	if (error != GL_NO_ERROR)
 	{
-		printf("eglGetError(): %i (0x%.4x)\n", (int)error, (int)error);
-		//printf("Failed at %s:%i\n", __FILE__, __LINE__);
+		printf("glGetError(): %i (0x%.4x)\n", (int)error, (int)error);
+		printf("Failed at %s:%i\n", file, line);
 		exit(1);
 	}
 }
+
+
+#define TRICKMODE_NONE  0x00
+#define TRICKMODE_I     0x01
+#define TRICKMODE_FFFB  0x02
+
+#define PTS_FREQ       90000
+#define AV_SYNC_THRESH PTS_FREQ * 1
+
+#define MIN_FRAME_QUEUE_SIZE  16
+#define MAX_WRITE_QUEUE_SIZE  1
 
 void* VideoDecoderThread(void* argument) 
 {
 	// Initialize the codec
 	codec_para_t codecContext = { 0 };
 
+#if 0
+
+	//const char* fileName = "test.h264";
+	//codecContext.stream_type = STREAM_TYPE_ES_VIDEO;
+	//codecContext.video_type = VFORMAT_H264;
+	//codecContext.has_video = 1;
+	//codecContext.noblock = 0;
+	//codecContext.am_sysinfo.format = VIDEO_DEC_FORMAT_H264;
+	////codecContext.am_sysinfo.rate = (96000.0 / (24000.0 / 1001.0));	// 24 fps
+	//codecContext.am_sysinfo.param = (void*)(SYNC_OUTSIDE);
+
+
+	// 4K
+	const char* fileName = "test.h264";
 	codecContext.stream_type = STREAM_TYPE_ES_VIDEO;
-	codecContext.video_type = VFORMAT_H264;
+	codecContext.video_type = VFORMAT_H264_4K2K;
 	codecContext.has_video = 1;
 	codecContext.noblock = 0;
-	codecContext.am_sysinfo.format = VIDEO_DEC_FORMAT_H264;
-	codecContext.am_sysinfo.rate = (96000.0 / (24000.0 / 1001.0));	// 24 fps
+	codecContext.am_sysinfo.format = VIDEO_DEC_FORMAT_H264_4K2K;
+	//codecContext.am_sysinfo.rate = (96000.0 / (24000.0 / 1001.0));	// 24 fps
 	codecContext.am_sysinfo.param = (void*)(SYNC_OUTSIDE);
+
+#else
+
+	const char* fileName = "test.hevc";
+	codecContext.stream_type = STREAM_TYPE_ES_VIDEO;
+	codecContext.video_type = VFORMAT_HEVC;
+	codecContext.has_video = 1;
+	codecContext.noblock = 0;
+	codecContext.am_sysinfo.format = VIDEO_DEC_FORMAT_HEVC;
+	//codecContext.am_sysinfo.rate = (96000.0 / (24000.0 / 1001.0));	
+	codecContext.am_sysinfo.param = (void*)(SYNC_OUTSIDE);
+	
+#endif
+
 
 	int api = codec_init(&codecContext);
 	if (api != 0)
@@ -200,12 +204,15 @@ void* VideoDecoderThread(void* argument)
 		exit(1);
 	}
 
+	//codec_set_cntl_avthresh(&codecContext, AV_SYNC_THRESH);
+	//codec_set_cntl_mode(&codecContext, TRICKMODE_NONE);
+	//codec_set_cntl_syncthresh(&codecContext, 0);
 
 	// Open the media file
-	int fd = open("test.h264", O_RDONLY);
+	int fd = open(fileName, O_RDONLY);
 	if (fd < 0)
 	{
-		printf("test.h264 could not be opened.");
+		printf("test file could not be opened.");
 		exit(1);
 	}
 
@@ -215,32 +222,45 @@ void* VideoDecoderThread(void* argument)
 	while (isRunning)
 	{
 		// Read the ES video data from the file
-		int bytesRead = read(fd, &buffer, BUFFER_SIZE);
-		if (bytesRead < 1)
+		int bytesRead;
+		while (true)
 		{
+			bytesRead = read(fd, &buffer, BUFFER_SIZE);
+			if (bytesRead > 0)
+			{
+				break;
+			}
+
 			// Loop the video when the end is reached
 			lseek(fd, 0, SEEK_SET);
-			if (read(fd, &buffer + bytesRead,
-				BUFFER_SIZE - bytesRead) < 1)
-			{
-				printf("Problem reading file.");
-				exit(1);
-			}
 		}
-
 
 		// Send the data to the codec
-		int api = codec_write(&codecContext, &buffer, BUFFER_SIZE);
-		if (api != BUFFER_SIZE)
+		int api = 0;
+		int offset = 0;
+		do
 		{
-			printf("codec_write error: %x\n", api);
-			codec_reset(&codecContext);
-		}
+			api = codec_write(&codecContext, &buffer + offset, bytesRead - offset);
+			if (api == -EAGAIN)
+			{				
+				usleep(100);
+			}
+			else if (api == -1)
+			{
+				// TODO: Sometimes this error is returned.  Ignoring it
+				// does not seem to have any impact on video display
+			}
+			else if (api < 0)
+			{
+				printf("codec_write error: %x\n", api);
+				//codec_reset(&codecContext);
+			}
+			else if (api > 0)
+			{
+				offset += api;
+			}
 
-		// This is required on C2. The codec_write function
-		// currently does not appear to block as it should. This
-		// causes the buffers to overflow and the codec errors.
-		usleep(500);
+		} while (api == -EAGAIN || offset < bytesRead);
 	}
 
 
@@ -272,6 +292,25 @@ int osd_blank(const char *path, int cmd)
 }
 
 
+void WriteToFile(const char* path, const char* value)
+{
+	int fd = open(path, O_RDWR | O_TRUNC, 0644);
+	if (fd < 0)
+	{
+		printf("WriteToFile open failed: %s = %s\n", path, value);
+		exit(1);
+	}
+
+	if (write(fd, value, strlen(value)) < 0)
+	{
+		printf("WriteToFile write failed: %s = %s\n", path, value);
+		exit(1);
+	}
+
+	close(fd);
+}
+
+
 // Enable framebuffers (overrides console blanking)
 void init_display()
 {
@@ -279,7 +318,26 @@ void init_display()
 	osd_blank("/sys/class/graphics/fb1/blank", 0);
 }
 
+void SetVfmState()
+{
+	/*
+	echo "rm default" > /sys/class/vfm/map
+	echo "add default decoder ionvideo" > /sys/class/vfm/map
+	echo 1 > /sys/module/amvdec_h265/parameters/double_write_mode
+	 */
 
+	// Connect Ionvideo
+	WriteToFile("/sys/class/vfm/map", "rm default");
+	WriteToFile("/sys/class/vfm/map", "add default decoder ionvideo");
+
+	// Use NV21 instead of compressed format for hevc
+	WriteToFile("/sys/module/amvdec_h265/parameters/double_write_mode", "1");
+}
+
+void ResetVfmState()
+{
+	// TODO
+}
 
 const float quad[] =
 {
@@ -418,6 +476,25 @@ const float cubeUV[] =
 
 };
 
+#if DIRECT_RENDERING
+const char* vertexSource = "\n \
+attribute mediump vec4 Attr_Position;\n \
+attribute mediump vec2 Attr_TexCoord0;\n \
+\n \
+uniform mat4 WorldViewProjection;\n \
+\n \
+varying mediump vec2 TexCoord0;\n \
+\n \
+void main()\n \
+{\n \
+\n \
+  gl_Position = Attr_Position * WorldViewProjection;\n \
+  TexCoord0 = Attr_TexCoord0;\n \
+  TexCoord0.y = 1.0 -TexCoord0.y;\n \
+}\n \
+\n \
+ ";
+#else
 const char* vertexSource = "\n \
 attribute mediump vec4 Attr_Position;\n \
 attribute mediump vec2 Attr_TexCoord0;\n \
@@ -434,6 +511,7 @@ void main()\n \
 }\n \
 \n \
  ";
+#endif
 
 const char* fragmentSource = "\n \
 uniform lowp sampler2D DiffuseMap;\n \
@@ -442,7 +520,21 @@ varying mediump vec2 TexCoord0;\n \
 \n \
 void main()\n \
 {\n \
-  mediump vec4 rgba = texture2D(DiffuseMap, TexCoord0);\n \
+  lowp vec4 rgba = texture2D(DiffuseMap, TexCoord0);\n \
+\n \
+  gl_FragColor = rgba;\n \
+}\n \
+\n \
+";
+
+const char* fragmentSourceNV12 = "#extension GL_OES_EGL_image_external : require\n \
+uniform lowp samplerExternalOES DiffuseMap;\n \
+\n \
+varying mediump vec2 TexCoord0;\n \
+\n \
+void main()\n \
+{\n \
+  lowp vec4 rgba = texture2D(DiffuseMap, TexCoord0);\n \
 \n \
   gl_FragColor = rgba;\n \
 }\n \
@@ -450,63 +542,248 @@ void main()\n \
 ";
 
 
-int OpenCapture()
+struct FrameBufferDmaInfo
 {
-	int amlfd = open("/dev/amvideocap0", O_RDWR);
-	if (amlfd < 0)
+	int Width;
+	int Height;
+	int BitsPerPixel;
+	int LengthInBytes;
+	int DmaBufferHandleFileDescriptor;
+	fb_var_screeninfo var_info;
+	int fd;
+};
+
+
+FrameBufferDmaInfo GetFrameBufferDmabufFd()
+{
+	FrameBufferDmaInfo info = { 0 };
+	
+	info.fd = open("/dev/fb0", O_RDWR);
+	printf("file handle: %x\n", info.fd);
+
+
+	//fb_var_screeninfo var_info;
+	int ret = ioctl(info.fd, FBIOGET_VSCREENINFO, &info.var_info);
+	if (ret < 0)
 	{
-		printf("failed to open /dev/amvideocap0\n");
+		printf("FBIOGET_VSCREENINFO failed.\n");
 		exit(1);
 	}
 
-	if (ioctl(amlfd, AMVIDEOCAP_IOR_SET_SRC_WIDTH, 1920) == -1 ||
-		ioctl(amlfd, AMVIDEOCAP_IOR_SET_SRC_HEIGHT, 1080) == -1)
-	{
-		printf("Failed to configure frame size\n");
-		exit(1);
-	}
+	info.Width = info.var_info.xres;
+	info.Height = info.var_info.yres;
+	info.BitsPerPixel = info.var_info.bits_per_pixel;
+	info.LengthInBytes = info.Width * info.Height * (info.BitsPerPixel / 8);
 
-	if (ioctl(amlfd, AMVIDEOCAP_IOW_SET_WANTFRAME_WIDTH, 1920) == -1 ||
-		ioctl(amlfd, AMVIDEOCAP_IOW_SET_WANTFRAME_HEIGHT, 1080) == -1)
-	{
-		printf("Failed to configure frame size\n");
-		exit(1);
-	}
+	printf("screen info: width=%d, height=%d, bpp=%d\n", info.Width, info.Height, info.BitsPerPixel);
 
-	if (ioctl(amlfd, AMVIDEOCAP_IOW_SET_WANTFRAME_FORMAT, GE2D_FORMAT_S32_ABGR) == -1)	//GE2D_FORMAT_S32_ABGR, GE2D_FORMAT_S32_RGBA
-	{
-		printf("Failed to configure frame size\n");
-		exit(1);
-	}
 
-	if (ioctl(amlfd, AMVIDEOCAP_GET_DMABUF_FD, &dmabuf_fd) == -1)
+	int result = -1;
+	ret = ioctl(info.fd, OSD_GET_DMA_BUF_FD, &result);
+	if (ret < 0)
 	{
-		printf("ioctl AMVIDEOCAP_GET_DMABUF_FD failed.\n");
+		printf("OSD_GET_DMA_BUF_FD failed. (%d)\n", ret);
 		exit(1);
 	}
 	else
 	{
-		printf("dma-buf file descriptor=%d\n", dmabuf_fd);
+		printf("OSD_GET_DMA_BUF_FD = %d\n", result);
 	}
-	
 
+	info.DmaBufferHandleFileDescriptor = result;
 
-	return amlfd;
+	//close(fd_fb0);
+	return info;
 }
 
 
-int main()
-{
-	isRunning = true;
 
+const int BUFFER_COUNT = 4;
+
+#if 0
+// HD
+const int VIDEO_WIDTH = 1920;
+const int VIDEO_HEIGHT = 1080;
+#else
+// 4K
+const int VIDEO_WIDTH = 3840;
+const int VIDEO_HEIGHT = 2160;
+#endif
+
+const int VIDEO_FRAME_SIZE = VIDEO_WIDTH * VIDEO_HEIGHT;
+
+#if 1
+const unsigned int VIDEO_FORMAT = V4L2_PIX_FMT_NV12;
+#else
+const unsigned int VIDEO_FORMAT = V4L2_PIX_FMT_RGB32;
+#endif
+
+
+struct IonInfo
+{
+	int IonFD;
+	int IonVideoFD;
+	int VideoBufferDmaBufferFD[BUFFER_COUNT];
+};
+
+IonInfo OpenIonVideoCapture()
+{
+	IonInfo info = { 0 };
+
+	info.IonVideoFD = open("/dev/video13", O_RDWR ); //| O_NONBLOCK
+	if (info.IonVideoFD < 0)
+	{
+		printf("open ionvideo failed.");
+		exit(1);
+	}
+
+	printf("ionvideo file handle: %x\n", info.IonVideoFD);
+
+
+	info.IonFD = open("/dev/ion", O_RDWR);
+	if (info.IonFD < 0)
+	{
+		printf("open ion failed.");
+		exit(1);
+	}
+
+	printf("ion file handle: %x\n", info.IonFD);
+
+
+	// Set the capture format
+	v4l2_format format = { 0 };
+	format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	format.fmt.pix_mp.width = VIDEO_WIDTH;
+	format.fmt.pix_mp.height = VIDEO_HEIGHT;
+	format.fmt.pix_mp.pixelformat = VIDEO_FORMAT;
+	
+	int v4lcall = ioctl(info.IonVideoFD, VIDIOC_S_FMT, &format);
+	if (v4lcall < 0)
+	{
+		printf("ionvideo VIDIOC_S_FMT failed: 0x%x", v4lcall);
+		exit(1);
+	}
+
+
+	// Request buffers
+	v4l2_requestbuffers requestBuffers = { 0 };
+	requestBuffers.count = BUFFER_COUNT;
+	requestBuffers.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	requestBuffers.memory = V4L2_MEMORY_DMABUF;
+	
+	v4lcall = ioctl(info.IonVideoFD, VIDIOC_REQBUFS, &requestBuffers);
+	if (v4lcall < 0)
+	{
+		printf("ionvideo VIDIOC_REQBUFS failed: 0x%x", v4lcall);
+		exit(1);
+	}
+
+
+	// Allocate buffers
+	int videoFrameLength = 0;
+	switch (format.fmt.pix_mp.pixelformat)
+	{
+	case V4L2_PIX_FMT_RGB32:
+		videoFrameLength = VIDEO_FRAME_SIZE * 4;
+		break;
+
+	case V4L2_PIX_FMT_NV12:
+		videoFrameLength = VIDEO_FRAME_SIZE * 2;
+		break;
+
+	default:
+		printf("Unsupported video formated.\n");
+		exit(1);
+		break;
+	}
+
+	for (int i = 0; i < BUFFER_COUNT; ++i)
+	{
+		// Allocate a buffer
+		ion_allocation_data allocation_data = { 0 };
+		allocation_data.len = videoFrameLength;
+		allocation_data.heap_id_mask = ION_HEAP_CARVEOUT_MASK;
+		allocation_data.flags = ION_FLAG_CACHED;
+
+		int ionCall = ioctl(info.IonFD, ION_IOC_ALLOC, &allocation_data);
+		if (ionCall != 0)
+		{
+			printf("failed to allocate ion buffer: %d\n", i);
+			exit(1);
+		}
+
+
+		// Export the dma_buf
+		ion_fd_data fd_data = { 0 };
+		fd_data.handle = allocation_data.handle;
+		
+		ionCall = ioctl(info.IonFD, ION_IOC_SHARE, &fd_data);
+		if (ionCall < 0)
+		{
+			printf("failed to retrieve ion dma_buf handle: %d\n", i);
+			exit(1);
+		}
+
+		info.VideoBufferDmaBufferFD[i] = fd_data.fd;
+
+
+		// Queue the buffer for V4L to use
+		v4l2_buffer buffer = { 0 };
+
+		buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+		buffer.memory = V4L2_MEMORY_DMABUF;
+		buffer.index = i;
+		buffer.m.fd = info.VideoBufferDmaBufferFD[i];
+		buffer.length = 1;	// Ionvideo only supports single plane
+
+		v4lcall = ioctl(info.IonVideoFD, VIDIOC_QBUF, &buffer);
+		if (v4lcall < 0)
+		{
+			printf("failed to queue ion buffer #%d: 0x%x\n", i, v4lcall);
+			exit(1);
+		}
+
+		// DEBUG
+		printf("Queued v4l2_buffer:\n");
+		printf("\tindex=%x\n", buffer.index);
+		printf("\ttype=%x\n", buffer.type);
+		printf("\tm.fd=%x\n", buffer.m.fd);
+	}
+
+
+	// Start "streaming"
+	int bufferType = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+	v4lcall = ioctl(info.IonVideoFD, VIDIOC_STREAMON, &bufferType);
+	if (v4lcall < 0)
+	{
+		printf("ionvideo VIDIOC_STREAMON failed: 0x%x", v4lcall);
+		exit(1);
+	}
+
+
+	return info;
+}
+
+
+//------------------------------
+
+
+int main_ionvideo()
+{
+	// Intialize
+	isRunning = true;
 
 	// Trap signal to clean up
 	signal(SIGINT, SignalHandler);
 
-
+	// Unblank display
 	init_display();
+	
+	// Ionvideo will not generate frames until connected
+	SetVfmState();
 
-
+	// Create EGL/GL rendering contexts
 	EGLDisplay display = Egl_Initialize();
 
 	EGLConfig config;
@@ -515,73 +792,98 @@ int main()
 	EGLContext context = Egl_CreateContext(display, surface, config);
 
 
-	printf("GL Extensions: %s\n", glGetString(GL_EXTENSIONS));
-	
+	FrameBufferDmaInfo info = GetFrameBufferDmabufFd();	
 
-	// start decoder
-	pthread_t thread;
-	int result_code = pthread_create(&thread, NULL, VideoDecoderThread, NULL);
-	if (result_code != 0)
+
+#if DIRECT_RENDERING
+	// fb0 direct rendering (render target)
+	EGLImageKHR frameBufferImage[MAX_SCREEN_BUFFERS] = { 0 };
+	
+	GLuint frameBufferTexture[MAX_SCREEN_BUFFERS] = { 0 };
+	glGenTextures(MAX_SCREEN_BUFFERS, frameBufferTexture);
+	GL_CheckError();
+	
+	for (int i = 0; i < MAX_SCREEN_BUFFERS; ++i)
 	{
-		printf("pthread_create failed.\n");
-		exit(1);
+
+		EGLint img_attrs[] = {
+			EGL_WIDTH, info.Width,
+			EGL_HEIGHT, info.Height,
+			EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_BGRA8888,	//DRM_FORMAT_RGBA8888
+			EGL_DMA_BUF_PLANE0_FD_EXT,	info.DmaBufferHandleFileDescriptor,
+			EGL_DMA_BUF_PLANE0_OFFSET_EXT, info.LengthInBytes * i,
+			EGL_DMA_BUF_PLANE0_PITCH_EXT, info.Width * 4,
+			EGL_NONE
+		};
+
+		frameBufferImage[i] = eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, 0, img_attrs);
+		Egl_CheckError();
+
+		printf("frameBufferImage = %p\n", frameBufferImage[i]);
+
+		glBindTexture(GL_TEXTURE_2D, frameBufferTexture[i]);
+		GL_CheckError();
+
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		GL_CheckError();
+
+		glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		GL_CheckError();
+
+		glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, frameBufferImage[i]);
+		GL_CheckError();
 	}
 
 
-	// Setup capture
-	int amlfd = OpenCapture();
-	
-	//void* captureData = mmap(NULL, 1920 * 1080 * 4, PROT_READ, MAP_FILE | MAP_SHARED, amlfd, 0);
-	//void* captureData = mmap(NULL, 1920 * 1080 * 4, PROT_READ, MAP_FILE | MAP_SHARED, dmabuf_fd, 0);
-	//if (captureData == MAP_FAILED)
-	//{
-	//	printf("mmap failed\n");
-	//	exit(1);
-	//}
-
-	//printf("captureData=%p\n", captureData);
-
-
-	// EGL_EXT_image_dma_buf_import
-	EGLint img_attrs[] = {
-		EGL_WIDTH, 1920,
-		EGL_HEIGHT, 1080,
-		EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_RGBA8888,
-		EGL_DMA_BUF_PLANE0_FD_EXT,	dmabuf_fd,
-		EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
-		EGL_DMA_BUF_PLANE0_PITCH_EXT, 1920 * 4,
-		EGL_NONE
-	};
-
-	EGLImageKHR image = eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, 0, img_attrs);
-	Egl_CheckError();
-
-	printf("EGLImageKHR = %p\n", image);
-
-
-
-	// Texture
-	GLuint texture2D;
-	glGenTextures(1, &texture2D);
-	GL_CheckError();
-
-	glActiveTexture(GL_TEXTURE0);
-	GL_CheckError();
-
-	glBindTexture(GL_TEXTURE_2D, texture2D);
-	GL_CheckError();
-
-	glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	GL_CheckError();
-
-	glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	GL_CheckError();
-
-	//glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1920, 1080, 0, GL_RGBA, GL_UNSIGNED_BYTE, (const GLvoid *)NULL);
+	//// Z-Buffer
+	//GLuint frameBufferZBuffer;
+	//glGenRenderbuffers(1, &frameBufferZBuffer);
 	//GL_CheckError();
 
-	glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, image);
+	//glBindRenderbuffer(GL_RENDERBUFFER, frameBufferZBuffer);
+	//GL_CheckError();
+
+	//glRenderbufferStorage(GL_RENDERBUFFER,
+	//	GL_DEPTH_COMPONENT24_OES,
+	//	info.Width,
+	//	info.Height);
+	//GL_CheckError();
+
+
+	// GL Framebuffer
+	GLuint frameBuffer[MAX_SCREEN_BUFFERS] = { 0 };
+	glGenFramebuffers(MAX_SCREEN_BUFFERS, frameBuffer);
 	GL_CheckError();
+
+	for (int i = 0; i < MAX_SCREEN_BUFFERS; ++i)
+	{
+		glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer[i]);
+		GL_CheckError();
+
+		glFramebufferTexture2D(GL_FRAMEBUFFER,	//target
+			GL_COLOR_ATTACHMENT0,				//attachment
+			GL_TEXTURE_2D,						// textarget
+			frameBufferTexture[i],				// texture
+			0);									// level
+		GL_CheckError();
+
+		//glFramebufferRenderbuffer(GL_FRAMEBUFFER,
+		//	GL_DEPTH_ATTACHMENT,
+		//	GL_RENDERBUFFER,
+		//	frameBufferZBuffer);
+		//GL_CheckError();
+
+		GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+		if (status != GL_FRAMEBUFFER_COMPLETE)
+		{
+			printf("Framebuffer is NOT complete.\n");
+		}
+		else
+		{
+			printf("Framebuffer COMPLETE.\n");
+		}
+	}
+#endif
 
 
 	// Shader
@@ -601,7 +903,7 @@ int main()
 		else
 		{
 			shaderType = GL_FRAGMENT_SHADER;
-			sourceCode = fragmentSource;
+			sourceCode = fragmentSourceNV12;
 		}
 
 		GLuint openGLShaderID = glCreateShader(shaderType);
@@ -677,9 +979,16 @@ int main()
 		throw Exception();
 
 
+	GLuint diffuseMap = glGetUniformLocation(openGLProgramID, "DiffuseMap");
+	GL_CheckError();
+
+	if (diffuseMap < 0)
+		throw Exception();
+
+
 	// Setup OpenGL
-	//glClearColor(1, 0, 0, 1);	// RED for diagnostic use
-	glClearColor(0, 0, 0, 0);	// Transparent Black
+	glClearColor(1, 0, 0, 1);	// RED for diagnostic use
+	//glClearColor(0, 0, 0, 0);	// Transparent Black
 	GL_CheckError();
 
 	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -693,111 +1002,276 @@ int main()
 
 	glFrontFace(GL_CCW);
 	GL_CheckError();
+	
+	glViewport(0, 0, info.Width, info.Height);
+	GL_CheckError();
+
+	glActiveTexture(GL_TEXTURE0);
+	GL_CheckError();
 
 
-	float rotX = 0;
-	float rotY = 0;
-	float rotZ = 0;
+	// ----- IONVIDEO -----
+	IonInfo ionInfo = OpenIonVideoCapture();
 
-	// Render loop
+	// Create EGLImages and Texture for all capture buffers
+	EGLImageKHR eglImage[BUFFER_COUNT] = { 0 };
+
+	GLuint texture[BUFFER_COUNT] = { 0 };
+	glGenTextures(BUFFER_COUNT, texture);
+	GL_CheckError();
+
+	for (int i = 0; i < BUFFER_COUNT; ++i)
+	{
+		switch (VIDEO_FORMAT)
+		{
+		case V4L2_PIX_FMT_RGB32:
+		{
+			EGLint img_attrs[] = {
+				EGL_WIDTH, VIDEO_WIDTH,
+				EGL_HEIGHT, VIDEO_HEIGHT,
+				EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_RGBA8888,
+				EGL_DMA_BUF_PLANE0_FD_EXT,	ionInfo.VideoBufferDmaBufferFD[i],
+				EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+				EGL_DMA_BUF_PLANE0_PITCH_EXT, VIDEO_WIDTH * 4,
+				EGL_NONE
+			};
+
+			eglImage[i] = eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, 0, img_attrs);
+			Egl_CheckError();
+		}
+		break;
+
+		case V4L2_PIX_FMT_NV12:
+		{
+			EGLint img_attrs[] = {
+				EGL_WIDTH, VIDEO_WIDTH,
+				EGL_HEIGHT, VIDEO_HEIGHT,
+				EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_NV12,
+				EGL_DMA_BUF_PLANE0_FD_EXT,	ionInfo.VideoBufferDmaBufferFD[i],
+				EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+				EGL_DMA_BUF_PLANE0_PITCH_EXT, VIDEO_WIDTH,
+				EGL_DMA_BUF_PLANE1_FD_EXT,	ionInfo.VideoBufferDmaBufferFD[i],
+				EGL_DMA_BUF_PLANE1_OFFSET_EXT, VIDEO_FRAME_SIZE,
+				EGL_DMA_BUF_PLANE1_PITCH_EXT, VIDEO_WIDTH * 2,
+				EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC601_EXT,	// EGL_ITU_REC601_EXT EGL_ITU_REC709_EXT EGL_ITU_REC2020_EXT
+				EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_NARROW_RANGE_EXT,	// EGL_YUV_FULL_RANGE_EXT creates a "washed out" picture
+				EGL_NONE
+			}; 
+
+			eglImage[i] = eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, 0, img_attrs);
+			Egl_CheckError();
+		}
+			break;
+
+		default:
+			printf("unsupported video format.\n");
+			exit(1);
+			break;
+		}
+
+		glActiveTexture(GL_TEXTURE0 + i);
+		GL_CheckError();
+
+		glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture[i]);
+		GL_CheckError();
+
+		glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+		GL_CheckError();
+
+		glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		GL_CheckError();
+
+		glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, eglImage[i]);
+		GL_CheckError();
+	}
+
+
+	// ----- start decoder -----
+	pthread_t thread;
+	int result_code = pthread_create(&thread, NULL, VideoDecoderThread, NULL);
+	if (result_code != 0)
+	{
+		printf("pthread_create failed.\n");
+		exit(1);
+	}
+
+
+	// ----- RENDERING -----
+	int frames = 0;
+	float totalTime = 0;
+
+	ResetTime();
+
+	int currentBuffer = 0;
+	
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	GL_CheckError();
+
 	while (isRunning)
 	{
-		// Capture
-		if (ioctl(amlfd, AMVIDEOCAP_IOW_SET_START_CAPTURE, 1000) == 0)
+#if DIRECT_RENDERING
+		// Set the buffer to render to
+		glBindFramebuffer(GL_FRAMEBUFFER, frameBuffer[currentBuffer]);
+		GL_CheckError();
+#endif
+
+
+		// Debug testing for direct render
+		//switch (currentBuffer)
+		//{
+		//case 0:
+		//	glClearColor(1, 0, 0, 1);
+		//	break;
+		//case 1:
+		//	glClearColor(0, 0, 1, 1);
+		//	break;
+		//case 2:
+		//	glClearColor(0, 1, 0, 1);
+		//	break;
+
+		//default:
+		//	printf("currentBuffer error.");
+		//	exit(1);
+		//	break;
+		//} 
+		
+		//float red = (rand() % 256) / 255.0f;
+		//float green = (rand() % 256) / 255.0f;
+		//float blue = (rand() % 256) / 255.0f;
+		//glClearColor(red, green, blue, 1);
+
+
+		// Get a frame
+		v4l2_buffer buffer = { 0 };
+		buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+		buffer.memory = V4L2_MEMORY_DMABUF;
+
+		int v4lCall = ioctl(ionInfo.IonVideoFD, VIDIOC_DQBUF, &buffer);
+		if (v4lCall < 0)
 		{
-			glClear(GL_COLOR_BUFFER_BIT |
-				GL_DEPTH_BUFFER_BIT |
-				GL_STENCIL_BUFFER_BIT);
+			printf("render: failed to dequeue buffer: 0x%x\n", v4lCall);
+			exit(1);
+		}
+
+		//// DEBUG
+		//printf("Got v4l2_buffer: (v4lCall=0x%x)\n", v4lCall);
+		//printf("\tindex=%x\n", buffer.index);
+		//printf("\ttype=%x\n", buffer.type);
+		//printf("\tm.fd=%x\n", buffer.m.fd);
 
 
-			// Upload texture data
-			//glActiveTexture(GL_TEXTURE0);
-			//GL_CheckError();
+		//glClear(GL_COLOR_BUFFER_BIT);	//| GL_DEPTH_BUFFER_BIT
+		//GL_CheckError();
+		
 
-			//glBindTexture(GL_TEXTURE_2D, texture2D);
-			//GL_CheckError();
+		// Quad
+		{
+			// Set the quad vertex data
+			glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * 4, quad);
+			GL_CheckError();
 
-			//glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 1920, 1080, GL_RGBA, GL_UNSIGNED_BYTE, captureData);
-			//GL_CheckError();
-
-
-			// Quad
-			//{
-			//	// Set the quad vertex data
-			//	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * 4, quad);
-			//	GL_CheckError();
-
-			//	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2 * 4, quadUV);
-			//	GL_CheckError();
+			glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2 * 4, quadUV);
+			GL_CheckError();
 
 
-			//	// Set the matrix
-			//	Matrix4 transpose = Matrix4::CreateTranspose(Matrix4::Identity);
-			//	float* wvpValues = &transpose.M11;
+			// Set the matrix
+#if 0
+			float scale = 0.25f;
+			Matrix4 scaleMatrix(scale, 0, 0, 0,
+				0, scale, 0, 0,
+				0, 0, 1, 0,
+				0, 0, 0, 1);
+#else
+			Matrix4 scaleMatrix = Matrix4::Identity;
+#endif
+			Matrix4 transpose = Matrix4::CreateTranspose(scaleMatrix);
+			float* wvpValues = &transpose.M11;
 
-			//	glUniformMatrix4fv(wvpUniformLocation, 1, GL_FALSE, wvpValues);
-			//	GL_CheckError();
-
-
-			//	// Draw
-			//	glDrawArrays(GL_TRIANGLES, 0, 3 * 2);
-			//	GL_CheckError();
-			//}
-
-
-			// Cube
-			{
-				// Set the vertex data
-				glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * 4, cube);
-				GL_CheckError();
-
-				glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2 * 4, cubeUV);
-				GL_CheckError();
+			glUniformMatrix4fv(wvpUniformLocation, 1, GL_FALSE, wvpValues);
+			GL_CheckError();
 
 
-				const float TwoPI = (float)(M_PI * 2.0);
+			// Set the texture
+#if 1
+			glUniform1i(diffuseMap, buffer.index);
+			GL_CheckError();
+#else		
+			glActiveTexture(GL_TEXTURE0);
+			GL_CheckError();
+
+			glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture[buffer.index]);
+			GL_CheckError();
+#endif
+
+			// Draw
+			glDrawArrays(GL_TRIANGLES, 0, 3 * 2);
+			GL_CheckError();
+		}
 
 
-				rotY += 0.05f;
-				while (rotY > TwoPI)
-				{
-					rotY -= TwoPI;
-				}
 
-				rotX += 0.05f;
-				while (rotX > TwoPI)
-				{
-					rotX -= TwoPI;
-				}
-
-				Matrix4 world = Matrix4::CreateRotationX(rotX) * Matrix4::CreateRotationY(rotY) * Matrix4::CreateRotationZ(rotZ);
-				Matrix4 view = Matrix4::CreateLookAt(Vector3(0, 0, 3.5f), Vector3::Forward, Vector3::Up);
-
-				Matrix4 wvp = world * view * Matrix4::CreatePerspectiveFieldOfView(M_PI_4, 16.0f / 9.0f, 0.1f, 50);
-
-				Matrix4 transpose = Matrix4::CreateTranspose((wvp));
-				float* wvpValues = &transpose.M11;
+#if DIRECT_RENDERING
+		// swap buffers
+		glFinish();
 
 
-				glUniformMatrix4fv(wvpUniformLocation, 1, GL_FALSE, wvpValues);
-				GL_CheckError();
+		info.var_info.yoffset = info.Height * currentBuffer;
+		ioctl(info.fd, FBIOPAN_DISPLAY, &info.var_info);
 
+		for (int i = 0; i < SWAP_INTERVAL; ++i)
+		{
+			ioctl(info.fd, FBIO_WAITFORVSYNC, 0);
+		}
 
-				glDrawArrays(GL_TRIANGLES, 0, 3 * 2 * 6);
-				GL_CheckError();
-			}
+		++currentBuffer;
+		if (currentBuffer >= MAX_SCREEN_BUFFERS)
+		{
+			currentBuffer = 0;
+		}
 
-
-			//glBindTexture(GL_TEXTURE_2D, 0);
-			//GL_CheckError();
-
-			// Swap
+		GLenum attachments[] = { GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT };
+		glDiscardFramebufferEXT(GL_FRAMEBUFFER, 2, attachments);
+		GL_CheckError();
+#else
 			eglSwapBuffers(display, surface);
-			Egl_CheckError();
+#endif
+
+		// Return the buffer to V4L
+		// Important: Ensure the GPU is done with the buffer before returning it.
+		//			  This can be done with glFinish(); or eglSwapBuffers	
+		v4lCall = ioctl(ionInfo.IonVideoFD, VIDIOC_QBUF, &buffer);
+		if (v4lCall < 0)
+		{
+			printf("render: failed to queue ion buffer #%d: 0x%x\n", buffer.index, v4lCall);
+			exit(1);
+		}
+
+
+		// FPS
+		float deltaTime = GetTime();
+
+		totalTime += deltaTime;
+		++frames;
+
+		if (totalTime >= 1.0f)
+		{
+			int fps = (int)(frames / totalTime);
+			printf("FPS: %i\n", fps);
+
+			frames = 0;
+			totalTime = 0;
 		}
 	}
 
-	close(amlfd);
+
+	ResetVfmState();
 
 	return 0;
+}
+
+
+int main()
+{
+	//return main_amvideocap();
+	return main_ionvideo();
 }
