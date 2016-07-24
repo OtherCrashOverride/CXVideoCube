@@ -1,4 +1,4 @@
-// g++ -o CXVideoCube main.cpp egl.cpp Exception.cpp Matrix4.cpp Vector3.cpp -L/usr/lib/aml_libs/ -lamcodec -lamadec -lamavutils -lasound -lMali -lpthread
+// g++ -std=c++11 -o CXVideoCube main.cpp egl.cpp Exception.cpp Matrix4.cpp Vector3.cpp -L/usr/lib/aml_libs/ -lamcodec -lamadec -lamavutils -lasound -lMali -lpthread
 
 #include <stdio.h>
 #include <sys/stat.h>
@@ -15,6 +15,9 @@
 #include <cstdlib>	//rand
 #include <errno.h>
 #include <linux/videodev2.h> // V4L
+#include <map>
+#include <queue>
+
 
 // The headers are not aware C++ exists
 extern "C"
@@ -90,11 +93,35 @@ const int BUFFER_SIZE = 1024 * 32;	// 4K video expected
 #define OSD_GET_DMA_BUF_FD		_IOWR('m', 313, int)
 #define FBIOPAN_DISPLAY         0x4606
 #define FBIO_WAITFORVSYNC       _IOW('F', 0x20, __u32)
-#define DIRECT_RENDERING		0
+#define DIRECT_RENDERING		1
 
 const int MAX_SCREEN_BUFFERS = 2;
 const int SWAP_INTERVAL = 0;
 
+
+// vfm_grabber experimental support
+#define MAX_PLANE_COUNT 3
+
+typedef struct
+{
+	int dma_fd[MAX_PLANE_COUNT];
+	int width;
+	int height;
+	int stride;
+	void *priv;
+	int cropWidth;
+	int cropHeight;
+} vfm_grabber_frame;
+
+typedef struct
+{
+	int frames_decoded;
+	int frames_ready;
+} vfm_grabber_info;
+
+#define VFM_GRABBER_GET_FRAME   _IOWR('V', 0x01, vfm_grabber_frame)
+#define VFM_GRABBER_GET_INFO    _IOWR('V', 0x02, vfm_grabber_info)
+#define VFM_GRABBER_PUT_FRAME   _IOWR('V', 0x03, vfm_grabber_frame)
 
 
 // Global variable(s)
@@ -161,7 +188,7 @@ void* VideoDecoderThread(void* argument)
 	// Initialize the codec
 	codec_para_t codecContext = { 0 };
 
-#if 0
+#if 1
 
 	//const char* fileName = "test.h264";
 	//codecContext.stream_type = STREAM_TYPE_ES_VIDEO;
@@ -326,9 +353,15 @@ void SetVfmState()
 	echo 1 > /sys/module/amvdec_h265/parameters/double_write_mode
 	 */
 
+#ifdef IONVIDEO
 	// Connect Ionvideo
 	WriteToFile("/sys/class/vfm/map", "rm default");
 	WriteToFile("/sys/class/vfm/map", "add default decoder ionvideo");
+#endif
+
+	// vfm_grabber
+	WriteToFile("/sys/class/vfm/map", "rm default");
+	WriteToFile("/sys/class/vfm/map", "add default decoder vfm_grabber");
 
 	// Use NV21 instead of compressed format for hevc
 	WriteToFile("/sys/module/amvdec_h265/parameters/double_write_mode", "1");
@@ -337,6 +370,10 @@ void SetVfmState()
 void ResetVfmState()
 {
 	// TODO
+	WriteToFile("/sys/class/vfm/map", "rm default");
+	WriteToFile("/sys/class/vfm/map", "add default decoder ppmgr deinterlace amvideo");
+
+	WriteToFile("/sys/module/amvdec_h265/parameters/double_write_mode", "0");
 }
 
 const float quad[] =
@@ -768,6 +805,21 @@ IonInfo OpenIonVideoCapture()
 
 //------------------------------
 
+int OpenVfmGrabber()
+{
+	int fd = open("/dev/vfm_grabber", O_RDWR); //| O_NONBLOCK
+	if (fd < 0)
+	{
+		printf("open vfm_grabber failed.");
+		exit(1);
+	}
+
+	printf("vfm_grabber file handle: %x\n", fd);
+
+	return fd;
+}
+
+//------------------------------
 
 int main_ionvideo()
 {
@@ -1010,6 +1062,7 @@ int main_ionvideo()
 	GL_CheckError();
 
 
+#ifdef IONVIDEO
 	// ----- IONVIDEO -----
 	IonInfo ionInfo = OpenIonVideoCapture();
 
@@ -1053,8 +1106,10 @@ int main_ionvideo()
 				EGL_DMA_BUF_PLANE1_FD_EXT,	ionInfo.VideoBufferDmaBufferFD[i],
 				EGL_DMA_BUF_PLANE1_OFFSET_EXT, VIDEO_FRAME_SIZE,
 				EGL_DMA_BUF_PLANE1_PITCH_EXT, VIDEO_WIDTH * 2,
-				EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC601_EXT,	// EGL_ITU_REC601_EXT EGL_ITU_REC709_EXT EGL_ITU_REC2020_EXT
-				EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_NARROW_RANGE_EXT,	// EGL_YUV_FULL_RANGE_EXT creates a "washed out" picture
+				EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC2020_EXT,	// EGL_ITU_REC601_EXT , EGL_ITU_REC709_EXT , EGL_ITU_REC2020_EXT
+				EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_NARROW_RANGE_EXT,	// EGL_YUV_NARROW_RANGE_EXT , EGL_YUV_FULL_RANGE_EXT creates a "washed out" picture
+				EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_5_EXT,
+				EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_5_EXT,
 				EGL_NONE
 			}; 
 
@@ -1084,6 +1139,27 @@ int main_ionvideo()
 		glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, eglImage[i]);
 		GL_CheckError();
 	}
+#endif
+	
+	// vfm_grabber support
+	int vfmFD = OpenVfmGrabber();
+
+
+	const int MAX_VFM_BUFFERS = 16;
+	
+	GLuint texture[MAX_VFM_BUFFERS] = { 0 };
+	glGenTextures(MAX_VFM_BUFFERS, texture);
+	GL_CheckError();
+	
+	std::queue<GLuint> textures;
+	for (int i = 0; i < MAX_VFM_BUFFERS; ++i)
+	{
+		textures.push(texture[i]);
+	}
+
+
+	std::map<int, EGLImageKHR> eglImageMap;
+	std::map<int, GLuint> textureMap;
 
 
 	// ----- start decoder -----
@@ -1142,6 +1218,7 @@ int main_ionvideo()
 
 
 		// Get a frame
+#ifdef IONVIDEO
 		v4l2_buffer buffer = { 0 };
 		buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 		buffer.memory = V4L2_MEMORY_DMABUF;
@@ -1152,6 +1229,80 @@ int main_ionvideo()
 			printf("render: failed to dequeue buffer: 0x%x\n", v4lCall);
 			exit(1);
 		}
+#endif
+
+		vfm_grabber_frame frame;
+		int vfmCall = ioctl(vfmFD, VFM_GRABBER_GET_FRAME, &frame);
+		if (vfmCall < 0)
+		{
+			printf("VFM_GRABBER_GET_FRAME ioctl failed.\n");
+			exit(1);
+		}
+
+		auto iter = eglImageMap.find(frame.dma_fd[0]);
+		if (iter == eglImageMap.end())
+		{
+			printf("Creating EglImage/Texture for dma_buf:%d,%d\n", frame.dma_fd[0], frame.dma_fd[1]);
+			printf("\tframe.width=%d, frame.height=%d\n", frame.width, frame.height);
+
+			// Create an EglImage and texture
+			EGLint img_attrs[] = {
+				EGL_WIDTH, frame.width,
+				EGL_HEIGHT, frame.height,
+				EGL_LINUX_DRM_FOURCC_EXT, DRM_FORMAT_NV12,
+				EGL_DMA_BUF_PLANE0_FD_EXT,	frame.dma_fd[0],
+				EGL_DMA_BUF_PLANE0_OFFSET_EXT, 0,
+				EGL_DMA_BUF_PLANE0_PITCH_EXT, frame.width,
+				EGL_DMA_BUF_PLANE1_FD_EXT,	frame.dma_fd[1],
+				EGL_DMA_BUF_PLANE1_OFFSET_EXT, 0, //frame.width * frame.height - (frame.width / 2),
+				EGL_DMA_BUF_PLANE1_PITCH_EXT, frame.width * 2,
+				EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_ITU_REC2020_EXT,	// EGL_ITU_REC601_EXT , EGL_ITU_REC709_EXT , EGL_ITU_REC2020_EXT
+				EGL_SAMPLE_RANGE_HINT_EXT, EGL_YUV_NARROW_RANGE_EXT,	// EGL_YUV_NARROW_RANGE_EXT , EGL_YUV_FULL_RANGE_EXT creates a "washed out" picture
+				EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_5_EXT,
+				EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT, EGL_YUV_CHROMA_SITING_0_5_EXT,
+				EGL_NONE
+			};
+
+			EGLImageKHR eglImage = eglCreateImageKHR(display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, 0, img_attrs);
+			Egl_CheckError();
+
+			eglImageMap[frame.dma_fd[0]] = eglImage;
+
+
+			//GLuint texture;
+			//glGenTextures(1, &texture);
+			//GL_CheckError();
+
+			if (textures.empty())
+			{
+				printf("out of free textures.\n");
+				exit(1);
+			}
+
+			GLuint texture = textures.front();
+			textures.pop();
+
+
+			glActiveTexture(GL_TEXTURE0);
+			GL_CheckError();
+
+			glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture);
+			GL_CheckError();
+
+			glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+			GL_CheckError();
+
+			glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+			GL_CheckError();
+
+			glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, eglImage);
+			GL_CheckError();
+
+			textureMap[frame.dma_fd[0]] = texture;
+		}
+
+		// TODO: Add texture cropping to shader
+
 
 		//// DEBUG
 		//printf("Got v4l2_buffer: (v4lCall=0x%x)\n", v4lCall);
@@ -1192,6 +1343,7 @@ int main_ionvideo()
 
 
 			// Set the texture
+#ifdef IONVIDEO
 #if 1
 			glUniform1i(diffuseMap, buffer.index);
 			GL_CheckError();
@@ -1202,6 +1354,17 @@ int main_ionvideo()
 			glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture[buffer.index]);
 			GL_CheckError();
 #endif
+#endif
+
+			glUniform1i(diffuseMap, 0);
+			GL_CheckError();
+
+			glActiveTexture(GL_TEXTURE0);
+			GL_CheckError();
+
+			glBindTexture(GL_TEXTURE_EXTERNAL_OES, textureMap[frame.dma_fd[0]]);
+			GL_CheckError();
+
 
 			// Draw
 			glDrawArrays(GL_TRIANGLES, 0, 3 * 2);
@@ -1233,9 +1396,10 @@ int main_ionvideo()
 		glDiscardFramebufferEXT(GL_FRAMEBUFFER, 2, attachments);
 		GL_CheckError();
 #else
-			eglSwapBuffers(display, surface);
+		eglSwapBuffers(display, surface);
 #endif
 
+#ifdef IONVIDEO
 		// Return the buffer to V4L
 		// Important: Ensure the GPU is done with the buffer before returning it.
 		//			  This can be done with glFinish(); or eglSwapBuffers	
@@ -1245,6 +1409,15 @@ int main_ionvideo()
 			printf("render: failed to queue ion buffer #%d: 0x%x\n", buffer.index, v4lCall);
 			exit(1);
 		}
+#endif
+
+		vfmCall = ioctl(vfmFD, VFM_GRABBER_PUT_FRAME, &frame);
+		if (vfmCall < 0)
+		{
+			printf("VFM_GRABBER_PUT_FRAME ioctl failed.\n");
+			exit(1);
+		}
+
 
 
 		// FPS
